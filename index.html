@@ -217,6 +217,10 @@
     <div class="brand"><h1>먹킷리스트</h1></div>
     <p class="tagline">먹고 싶던 걸, 먹을 때 기억하기 위한 기록.</p>
     <p class="rec-count mono" id="rec-count">0 entries</p>
+    <div id="sync-bar" style="margin-top:12px;display:flex;align-items:center;justify-content:space-between;font-size:12px;">
+      <span id="sync-status" class="mono" style="color:var(--faint);">동기화 안 됨 (이 기기에만 저장)</span>
+      <button id="btn-login" class="btn btn-ghost" style="padding:6px 12px;font-size:11.5px;">Google 로그인</button>
+    </div>
   </header>
 
   <nav class="tabs">
@@ -306,39 +310,128 @@
   <div class="footer-inner">LOCAL STORAGE · 이 기기에만 저장됩니다</div>
 </footer>
 
-<script>
+<script type="module">
+/* ---------- Firebase 초기화 (동기화용) ---------- */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {
+  getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getFirestore, doc, setDoc, getDoc, onSnapshot, enableIndexedDbPersistence
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDFzbfUa-aOKedO6bW34kY_MoZq_-F8igU",
+  authDomain: "meokkit-12b18.firebaseapp.com",
+  projectId: "meokkit-12b18",
+  storageBucket: "meokkit-12b18.firebasestorage.app",
+  messagingSenderId: "285975056864",
+  appId: "1:285975056864:web:a0e126fade2d4511b95b85"
+};
+const fbApp = initializeApp(firebaseConfig);
+const auth = getAuth(fbApp);
+const db = getFirestore(fbApp);
+try{ enableIndexedDbPersistence(db); }catch(e){ /* 이미 다른 탭에서 켜져있으면 무시 */ }
+
+let currentUser = null;
+let unsubscribeSnapshot = null;
+let applyingRemote = false; // 원격에서 온 변경을 반영하는 동안 재귀적 push 방지
+
+function userDocRef(uid){
+  return doc(db, "meokkit_users", uid);
+}
+
+async function pushToCloud(){
+  if(!currentUser || applyingRemote) return;
+  try{
+    await setDoc(userDocRef(currentUser.uid), { items, updatedAt: Date.now() });
+  }catch(e){ console.warn("클라우드 저장 실패", e); }
+}
+
+async function onLogin(user){
+  currentUser = user;
+  document.getElementById("sync-status").textContent = "동기화 중 · " + (user.email || "");
+  document.getElementById("btn-login").textContent = "로그아웃";
+
+  // 최초 로그인 시: 클라우드에 기존 데이터 있으면 그걸로, 없으면 지금 로컬 데이터를 클라우드로 올림
+  const snap = await getDoc(userDocRef(user.uid));
+  if(snap.exists() && Array.isArray(snap.data().items) && snap.data().items.length > 0){
+    applyingRemote = true;
+    items = snap.data().items;
+    save(); // 로컬(이 기기)에도 캐싱
+    applyingRemote = false;
+    renderAll();
+  } else {
+    await pushToCloud();
+  }
+
+  // 실시간 동기화: 다른 기기에서 바뀌면 이 화면에도 반영
+  if(unsubscribeSnapshot) unsubscribeSnapshot();
+  unsubscribeSnapshot = onSnapshot(userDocRef(user.uid), (docSnap)=>{
+    if(!docSnap.exists()) return;
+    const remoteItems = docSnap.data().items;
+    if(!Array.isArray(remoteItems)) return;
+    applyingRemote = true;
+    items = remoteItems;
+    localStorage.setItem(STORE_KEY, JSON.stringify(items));
+    applyingRemote = false;
+    renderAll();
+  });
+}
+
+function onLogout(){
+  currentUser = null;
+  if(unsubscribeSnapshot){ unsubscribeSnapshot(); unsubscribeSnapshot = null; }
+  document.getElementById("sync-status").textContent = "동기화 안 됨 (이 기기에만 저장)";
+  document.getElementById("btn-login").textContent = "Google 로그인";
+}
+
+document.getElementById("btn-login").addEventListener("click", async ()=>{
+  if(currentUser){
+    await signOut(auth);
+  } else {
+    await signInWithRedirect(auth, new GoogleAuthProvider());
+  }
+});
+
+getRedirectResult(auth).catch(()=>{ /* 로그인 취소 등은 조용히 무시 */ });
+
+onAuthStateChanged(auth, (user)=>{
+  if(user) onLogin(user); else onLogout();
+});
+
 /* ---------- 영양 데이터 (100g 기준) ---------- */
 const NUTRI = {
-  "블루베리": {kcal:57, key:"항산화 안토시아닌", note:"눈 건강·항산화"},
-  "그릭요거트": {kcal:97, key:"단백질 9g", note:"장 건강·근육 회복"},
-  "연어": {kcal:206, key:"오메가3", note:"염증 완화·두뇌 건강"},
-  "시금치": {kcal:23, key:"철분·엽산", note:"빈혈 예방"},
-  "달걀": {kcal:155, key:"완전단백질", note:"근육 합성"},
-  "아보카도": {kcal:160, key:"불포화지방", note:"혈관 건강"},
-  "고구마": {kcal:86, key:"식이섬유", note:"혈당 관리"},
-  "귀리": {kcal:389, key:"베타글루칸", note:"콜레스테롤 개선"},
-  "브로콜리": {kcal:34, key:"비타민C", note:"면역력"},
-  "견과류": {kcal:607, key:"불포화지방", note:"두뇌·혈관 건강"},
-  "두부": {kcal:76, key:"식물성 단백질", note:"근육·다이어트"},
-  "바나나": {kcal:89, key:"칼륨", note:"근육 경련 예방"},
-  "토마토": {kcal:18, key:"라이코펜", note:"항산화·피부"},
-  "마늘": {kcal:149, key:"알리신", note:"면역·혈행 개선"},
-  "김치": {kcal:15, key:"유산균", note:"장 건강"},
-  "닭가슴살": {kcal:165, key:"저지방 단백질", note:"근육 유지·다이어트"},
-  "퀴노아": {kcal:120, key:"완전 아미노산", note:"혈당·포만감"},
-  "렌틸콩": {kcal:116, key:"식물성 단백질·철분", note:"혈당 관리·포만감"},
-  "케일": {kcal:49, key:"비타민K·칼슘", note:"뼈 건강·해독"},
-  "석류": {kcal:83, key:"폴리페놀", note:"항산화·혈행"},
-  "버섯": {kcal:22, key:"비타민D·베타글루칸", note:"면역력"},
-  "청국장": {kcal:196, key:"낫토키나제·유산균", note:"혈행·장 건강"},
-  "미역": {kcal:45, key:"요오드·식이섬유", note:"갑상선·다이어트"},
-  "치아씨드": {kcal:486, key:"오메가3·식이섬유", note:"포만감·혈당"},
-  "다크초콜릿": {kcal:546, key:"플라보노이드", note:"항산화·혈압"},
-  "낫토": {kcal:212, key:"낫토키나제", note:"혈행 개선"},
-  "굴": {kcal:81, key:"아연", note:"면역·피로 회복"},
-  "미나리": {kcal:20, key:"베타카로틴", note:"해독·부기 완화"},
-  "새우": {kcal:99, key:"저지방 단백질", note:"근육·다이어트"},
-  "무화과": {kcal:74, key:"식이섬유·칼륨", note:"장 건강·혈압"}
+  "블루베리": {kcal:57, key:"안토시아닌", note:"강력한 항산화 성분이 눈의 피로와 노화를 늦추는 데 도움을 줘요"},
+  "그릭요거트": {kcal:97, key:"단백질 9g/100g", note:"일반 요거트보다 단백질이 2배 많아 장 건강과 운동 후 근육 회복에 좋아요"},
+  "연어": {kcal:206, key:"오메가3 지방산", note:"혈중 중성지방을 낮추고 만성 염증을 줄이며, 두뇌 인지 기능에도 도움돼요"},
+  "시금치": {kcal:23, key:"철분·엽산", note:"철분 흡수를 돕는 비타민C도 풍부해 빈혈 예방과 혈액 생성에 좋아요"},
+  "달걀": {kcal:155, key:"완전단백질", note:"9가지 필수 아미노산을 모두 갖춰 근육 합성 효율이 높은 대표 단백질원이에요"},
+  "아보카도": {kcal:160, key:"불포화지방", note:"나쁜 콜레스테롤(LDL)을 낮추고 좋은 콜레스테롤(HDL)은 유지해 혈관 건강에 도움돼요"},
+  "고구마": {kcal:86, key:"식이섬유·베타카로틴", note:"혈당을 천천히 올려 포만감이 오래 가고, 다이어트 중 대체 탄수화물로 좋아요"},
+  "귀리": {kcal:389, key:"베타글루칸", note:"수용성 식이섬유가 콜레스테롤 흡수를 막아 심혈관 건강을 개선해줘요"},
+  "브로콜리": {kcal:34, key:"비타민C·설포라판", note:"레몬보다 비타민C가 많고, 설포라판 성분이 항산화·해독 작용을 도와요"},
+  "견과류": {kcal:607, key:"불포화지방·비타민E", note:"소량으로도 포만감이 크고, 매일 소량 섭취 시 심혈관 질환 위험을 낮춰줘요"},
+  "두부": {kcal:76, key:"식물성 단백질", note:"콜레스테롤 없이 단백질을 보충할 수 있어 다이어트·근육 관리에 두루 좋아요"},
+  "바나나": {kcal:89, key:"칼륨", note:"운동 중 손실되는 칼륨을 보충해 근육 경련과 쥐를 예방하는 데 도움돼요"},
+  "토마토": {kcal:18, key:"라이코펜", note:"열을 가하면 흡수율이 높아지는 항산화 성분으로, 피부와 전립선 건강에 좋아요"},
+  "마늘": {kcal:149, key:"알리신", note:"자르거나 다졌을 때 생기는 알리신이 면역력 강화와 혈행 개선에 도움돼요"},
+  "김치": {kcal:15, key:"유산균", note:"발효 과정에서 생긴 유산균이 장내 환경을 개선하고 소화를 도와요"},
+  "닭가슴살": {kcal:165, key:"저지방 고단백", note:"지방은 적고 단백질은 풍부해 근육량 유지·다이어트 식단의 기본이 돼요"},
+  "퀴노아": {kcal:120, key:"완전 아미노산·저GI", note:"쌀보다 혈당을 천천히 올리면서 필수 아미노산을 모두 갖춘 곡물이에요"},
+  "렌틸콩": {kcal:116, key:"식물성 단백질·철분", note:"식이섬유가 풍부해 혈당 급상승을 막고 포만감이 오래 유지돼요"},
+  "케일": {kcal:49, key:"비타민K·칼슘", note:"뼈 형성에 필요한 비타민K가 풍부하고, 해독 효소 생성을 도와줘요"},
+  "석류": {kcal:83, key:"폴리페놀", note:"녹차보다 항산화력이 높다고 알려져 있으며, 혈행 개선에 도움돼요"},
+  "버섯": {kcal:22, key:"비타민D·베타글루칸", note:"햇빛을 쬔 버섯일수록 비타민D가 많아지고, 면역세포 활성화에 도움돼요"},
+  "청국장": {kcal:196, key:"낫토키나제·유산균", note:"혈전을 녹이는 효소와 발효 유산균이 함께 있어 혈행·장 건강에 이중으로 좋아요"},
+  "미역": {kcal:45, key:"요오드·알긴산", note:"요오드가 갑상선 기능을 돕고, 식이섬유가 콜레스테롤 배출을 도와요"},
+  "치아씨드": {kcal:486, key:"오메가3·수용성 식이섬유", note:"물에 불리면 부피가 커져 적은 양으로도 포만감을 오래 유지시켜줘요"},
+  "다크초콜릿": {kcal:546, key:"플라보노이드", note:"카카오 함량 70% 이상 제품일수록 혈압 개선과 항산화 효과가 커요"},
+  "낫토": {kcal:212, key:"낫토키나제", note:"혈전 용해를 돕는 효소가 풍부해 혈행 개선에 특화된 발효식품이에요"},
+  "굴": {kcal:81, key:"아연", note:"아연 함량이 매우 높아 면역력 강화와 피로 회복에 효과적이에요"},
+  "미나리": {kcal:20, key:"베타카로틴·칼륨", note:"체내 노폐물 배출을 돕는 해독 작용과 부기 완화에 도움돼요"},
+  "새우": {kcal:99, key:"저지방 고단백", note:"지방 함량이 낮으면서 단백질이 풍부해 다이어트 식단에 부담이 적어요"},
+  "무화과": {kcal:74, key:"식이섬유·칼륨", note:"장운동을 촉진하는 식이섬유가 풍부하고, 칼륨이 혈압 조절을 도와요"}
 };
 
 /* ---------- 상태 ---------- */
@@ -353,7 +446,15 @@ function load(){
   catch(e){ items = seedData(); }
   if(items.length===0) items = seedData();
 }
-function save(){ localStorage.setItem(STORE_KEY, JSON.stringify(items)); }
+function save(){
+  localStorage.setItem(STORE_KEY, JSON.stringify(items));
+  pushToCloud(); // 로그인 상태면 클라우드에도 반영 (비로그인 시 내부에서 조용히 무시됨)
+}
+function renderAll(){
+  renderList();
+  renderDict();
+  document.getElementById("rec-count").textContent = fmtCount(items.length);
+}
 function seedData(){
   return [
     {id:crypto.randomUUID(), name:"블루베리", cat:"식재료", memo:"", lastEaten:0, nutri:NUTRI["블루베리"]},

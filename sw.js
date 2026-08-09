@@ -1,5 +1,5 @@
 // 먹킷리스트 — 오프라인 캐싱용 서비스워커
-const CACHE_NAME = "meokkitlist-v2";
+const CACHE_NAME = "meokkitlist-v3";
 const ASSETS = [
   "./",
   "./index.html",

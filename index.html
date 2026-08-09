@@ -393,18 +393,27 @@ document.getElementById("btn-login").addEventListener("click", async ()=>{
   }
   const provider = new GoogleAuthProvider();
   try{
-    await signInWithPopup(auth, provider);
+    const result = await signInWithPopup(auth, provider);
+    alert("팝업 로그인 성공: " + result.user.email);
   }catch(e){
-    // 팝업이 막혔거나 실패하면 리디렉션 방식으로 재시도
+    alert("팝업 로그인 에러: " + e.code + " / " + e.message);
     try{
       await signInWithRedirect(auth, provider);
     }catch(e2){
-      alert("로그인에 실패했어요. 사파리라면 '팝업 차단' 설정을 확인해주세요.");
+      alert("리디렉션 시도 에러: " + e2.code + " / " + e2.message);
     }
   }
 });
 
-getRedirectResult(auth).catch(()=>{ /* 로그인 취소 등은 조용히 무시 */ });
+getRedirectResult(auth)
+  .then((result)=>{
+    if(result && result.user){
+      alert("리디렉션 로그인 성공 감지: " + result.user.email);
+    }
+  })
+  .catch((e)=>{
+    alert("리디렉션 로그인 에러: " + e.code + " / " + e.message);
+  });
 
 onAuthStateChanged(auth, (user)=>{
   if(user) onLogin(user); else onLogout();
